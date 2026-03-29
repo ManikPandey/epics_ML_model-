@@ -99,6 +99,19 @@ def load_environment():
     ML_MODEL = load_ml_model(filepath=model_path)
     print("🚀 System Online. AI Ready.")
 
+@app.get("/api/v1/sample-nodes")
+async def get_sample_nodes():
+    """Helper endpoint to get valid node IDs for testing."""
+    if CITY_GRAPH is None:
+         raise HTTPException(status_code=503, detail="Server environment is still loading.")
+    
+    nodes = list(CITY_GRAPH.nodes())
+    return {
+        "message": "Use these IDs in your POST request!",
+        "sample_start_node": random.choice(nodes),
+        "sample_end_node": random.choice(nodes)
+    }
+
 # Updated Request Model to include real-world context
 class RouteRequest(BaseModel):
     start_node: int
