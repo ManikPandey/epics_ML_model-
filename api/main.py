@@ -1,158 +1,135 @@
-# from fastapi import FastAPI, HTTPException
-# from pydantic import BaseModel
-# import sys
-# import os
-
-# # Add the parent directory to the path so we can import our core modules
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# from core.routing_engine import find_optimal_parking, load_stateful_graph
-
-# # Initialize the API
-# app = FastAPI(title="UrbanLink ML Engine", description="Multi-Objective Routing API", version="1.0")
-
-# # Global variable to keep the graph in RAM (so it doesn't load on every single request)
-# CITY_GRAPH = None
-
-# @app.on_event("startup")
-# def load_graph_on_startup():
-#     """Loads the city grid into server memory when the API starts."""
-#     global CITY_GRAPH
-#     print("Initializing server: Loading UrbanLink environment...")
-    
-#     # Check both potential locations for the data folder
-#     path_inside_project = "data/city_graph_with_parking.graphml"
-#     path_outside_project = "../data/city_graph_with_parking.graphml"
-    
-#     if os.path.exists(path_inside_project):
-#         target_path = path_inside_project
-#     elif os.path.exists(path_outside_project):
-#         target_path = path_outside_project
-#     else:
-#         raise FileNotFoundError("Could not find the graphml file! Please check where the data folder was created.")
-        
-#     CITY_GRAPH = load_stateful_graph(filepath=target_path)
-#     print("Environment loaded. Server is ready!")
-
-# # Define the expected JSON payload from the frontend
-# class RouteRequest(BaseModel):
-#     start_node: int
-#     end_node: int
-#     w_dist: float = 1.0   # Weight for travel time
-#     w_price: float = 10.0 # Weight for parking cost
-#     w_eco: float = 0.5    # Weight for gamification points
-
-# @app.post("/api/v1/get-point-c")
-# async def get_optimal_point_c(request: RouteRequest):
-#     """
-#     Endpoint for Node.js backend to request the optimal parking hub.
-#     """
-#     if CITY_GRAPH is None:
-#         raise HTTPException(status_code=503, detail="Server environment is still loading.")
-
-#     # Pass the data to our Multi-Objective DP engine
-#     optimal_hub, metrics = find_optimal_parking(
-#         CITY_GRAPH, 
-#         request.start_node, 
-#         request.end_node,
-#         w_dist=request.w_dist,
-#         w_price=request.w_price,
-#         w_eco=request.w_eco
-#     )
-
-#     if not optimal_hub:
-#         raise HTTPException(status_code=404, detail="Could not find a valid parking route.")
-
-#     # Return the clean JSON response to the website
-#     return {
-#         "status": "success",
-#         "message": "Optimal Point C located.",
-#         "data": {
-#             "parking_node_id": optimal_hub,
-#             "trip_metrics": metrics
-#         }
-#     }
-
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import sys
 import os
+import torch
+import networkx as nx
 import random
+import osmnx as ox
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.routing_engine import find_optimal_parking, load_stateful_graph, load_ml_model
+from core.routing_engine import orchestrate_smart_match, load_infrastructure, load_ai_models
 
-app = FastAPI(title="UrbanLink ML Engine", description="AI-Augmented Multi-Objective API")
+app = FastAPI(title="UrbanLink Tri-Model ML Engine", description="Industry-grade Orchestration API")
 
+# Global State
 CITY_GRAPH = None
-ML_MODEL = None
+MODELS = None
+EDGE_INDEX = None
+X_CURRENT = None
 
 @app.on_event("startup")
-def load_environment():
-    global CITY_GRAPH, ML_MODEL
-    print("Loading UrbanLink Graph and AI Models...")
+def boot_sequence():
+    global CITY_GRAPH, MODELS, EDGE_INDEX, X_CURRENT
+    print("🚀 Booting UrbanLink Tri-Model Orchestration Engine...")
     
-    graph_path = "data/city_graph_with_parking.graphml" if os.path.exists("data/city_graph_with_parking.graphml") else "../data/city_graph_with_parking.graphml"
-    model_path = "data/parking_model.json" if os.path.exists("data/parking_model.json") else "../data/parking_model.json"
+    # Load Infrastructure
+    CITY_GRAPH = load_infrastructure()
     
-    CITY_GRAPH = load_stateful_graph(filepath=graph_path)
-    ML_MODEL = load_ml_model(filepath=model_path)
-    print("🚀 System Online. AI Ready.")
+    # Load all 5 Machine Learning Models
+    MODELS = load_ai_models()
+    
+    # Build Spatial Tensors
+    if CITY_GRAPH and MODELS:
+        print("Mapping Spatial Index...")
+        node_mapping = {old_id: new_id for new_id, old_id in enumerate(CITY_GRAPH.nodes())}
+        edges = list(nx.relabel_nodes(CITY_GRAPH, node_mapping).edges())
+        EDGE_INDEX = torch.tensor([[e[0] for e in edges], [e[1] for e in edges]], dtype=torch.long)
+        
+        # Simulated live 23-hour traffic heartbeat
+        num_nodes = len(CITY_GRAPH.nodes())
+        X_CURRENT = torch.zeros((num_nodes, 23, 2)) 
+        
+    print("✅ System Online. Awaiting Tripartite routing requests.")
 
-@app.get("/api/v1/sample-nodes")
-async def get_sample_nodes():
-    """Helper endpoint to get valid node IDs for testing."""
-    if CITY_GRAPH is None:
-         raise HTTPException(status_code=503, detail="Server environment is still loading.")
-    
-    nodes = list(CITY_GRAPH.nodes())
-    return {
-        "message": "Use these IDs in your POST request!",
-        "sample_start_node": random.choice(nodes),
-        "sample_end_node": random.choice(nodes)
-    }
-
-# Updated Request Model to include real-world context
+# --- 1. NEW GPS-BASED PAYLOADS ---
 class RouteRequest(BaseModel):
-    start_node: int
-    end_node: int
-    hour_of_day: int     # 0-23
-    day_of_week: int     # 0 (Mon) to 6 (Sun)
-    is_raining: int      # 0 or 1
-    w_dist: float = 1.0
-    w_price: float = 10.0
-    w_eco: float = 0.5
+    driver_lat: float
+    driver_lng: float
+    rider_lat: float
+    rider_lng: float
+    user_type: int = 0  # 0 for Student/Eco-conscious, 1 for Executive/Impatient
+    is_raining: int = 0 # 0 for Clear, 1 for Rain
 
-@app.post("/api/v1/get-point-c")
-async def get_optimal_point_c(request: RouteRequest):
-    if CITY_GRAPH is None or ML_MODEL is None:
-        raise HTTPException(status_code=503, detail="Server or AI model is still loading.")
+class PolylineRequest(BaseModel):
+    driver_lat: float
+    driver_lng: float
+    rider_lat: float
+    rider_lng: float
+    hub_node_id: int # We keep this as an ID because the backend generated it
 
-    # Package the context for the AI
-    context = {
-        "hour_of_day": request.hour_of_day,
-        "day_of_week": request.day_of_week,
-        "is_raining": request.is_raining
-    }
+# --- 2. THE ROUTING ENDPOINT ---
+@app.post("/api/v1/route")
+async def execute_unified_route(req: RouteRequest):
+    if CITY_GRAPH is None or MODELS is None:
+        raise HTTPException(status_code=503, detail="System booting. Models not loaded yet.")
 
-    optimal_hub, metrics = find_optimal_parking(
-        CITY_GRAPH, 
-        ML_MODEL,
-        request.start_node, 
-        request.end_node,
-        context=context,
-        w_dist=request.w_dist,
-        w_price=request.w_price,
-        w_eco=request.w_eco
+    try:
+        # THE MAGIC: Snap raw GPS coordinates to the nearest physical street nodes
+        # Note: osmnx expects X = Longitude, Y = Latitude
+        driver_node = ox.distance.nearest_nodes(CITY_GRAPH, X=req.driver_lng, Y=req.driver_lat)
+        rider_node = ox.distance.nearest_nodes(CITY_GRAPH, X=req.rider_lng, Y=req.rider_lat)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not map GPS coordinates to city streets. {e}")
+
+    # Pass the snapped nodes to our Orchestration Engine
+    hub, metrics = orchestrate_smart_match(
+        G=CITY_GRAPH, 
+        models=MODELS,
+        driver_node=driver_node, 
+        rider_node=rider_node,
+        edge_index=EDGE_INDEX,
+        x_current=X_CURRENT,
+        user_type=req.user_type,
+        is_raining=req.is_raining
     )
 
-    if not optimal_hub:
-        raise HTTPException(status_code=404, detail="Could not find a valid route.")
+    if not hub:
+        raise HTTPException(status_code=404, detail="No viable path found considering current AI constraints.")
+
+    # Return the hub's actual GPS coordinates alongside its ID for the frontend
+    hub_lat = CITY_GRAPH.nodes[hub]['y']
+    hub_lng = CITY_GRAPH.nodes[hub]['x']
 
     return {
         "status": "success",
-        "data": {
-            "parking_node_id": optimal_hub,
-            "trip_metrics": metrics
-        }
+        "optimal_hub": {
+            "node_id": hub,
+            "lat": hub_lat,
+            "lng": hub_lng
+        },
+        "intelligence": metrics
     }
+
+# --- 3. THE POLYLINE ENDPOINT ---
+@app.post("/api/v1/get-polylines")
+async def get_map_polylines(req: PolylineRequest):
+    if CITY_GRAPH is None:
+        raise HTTPException(status_code=503, detail="Map infrastructure not loaded.")
+        
+    try:
+        # Snap the GPS coordinates again for the polyline trace
+        driver_node = ox.distance.nearest_nodes(CITY_GRAPH, X=req.driver_lng, Y=req.driver_lat)
+        rider_node = ox.distance.nearest_nodes(CITY_GRAPH, X=req.rider_lng, Y=req.rider_lat)
+
+        # Calculate the shortest physical paths through the street network
+        driver_path = nx.shortest_path(CITY_GRAPH, driver_node, req.hub_node_id, weight='length')
+        rider_path = nx.shortest_path(CITY_GRAPH, rider_node, req.hub_node_id, weight='length')
+        
+        # Extract the Latitude (y) and Longitude (x) for every turn in the path
+        driver_coords = [[CITY_GRAPH.nodes[n]['y'], CITY_GRAPH.nodes[n]['x']] for n in driver_path]
+        rider_coords = [[CITY_GRAPH.nodes[n]['y'], CITY_GRAPH.nodes[n]['x']] for n in rider_path]
+        hub_coords = [CITY_GRAPH.nodes[req.hub_node_id]['y'], CITY_GRAPH.nodes[req.hub_node_id]['x']]
+        
+        return {
+            "status": "success",
+            "geometry": {
+                "driver_route": driver_coords,
+                "rider_route": rider_coords,
+                "hub_location": hub_coords
+            }
+        }
+    except nx.NetworkXNoPath:
+        raise HTTPException(status_code=404, detail="Could not calculate physical street route.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
